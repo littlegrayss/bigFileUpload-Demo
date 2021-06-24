@@ -10,35 +10,49 @@
     <input type="file" name="upload" id="upload" accept="*">
     <button onclick="submit()">submit</button>
     <script>
+        let worker = {}
         const sliceChunkSize = 2 * 1024 * 1024
         async function submit() {
             const [file] = document.querySelector('#upload').files
             console.dir(file);
-
+            const filename = file.name
             let chunkList = []
             if (file.size > sliceChunkSize) {
                 chunkList = sliceChunk(file, sliceChunkSize)
                 
             } else {
                 chunkList = [{
-                    filename: file.name,
                     chunk: file,
                     index: 0
                 }]
             }
-            console.log(chunkList);
-            await uploadChunk(chunkList)
-            
+            const hash = await createHash(chunkList)
+
+            console.log(hash);
+            await uploadChunk(chunkList, hash, filename)
+            request({
+                methods: 'post',
+                url: 'http://127.0.0.1:3000/api/merge',
+                headers: {
+                    "content-type": "application/json"
+                },
+                params: JSON.stringify({
+                    hash: hash,
+                    filename: filename,
+                    size: sliceChunkSize
+                })
+            })
         }
-        const uploadChunk = async (chunkList) => {
-            let waitUpload = chunkList.map(({filename, chunk, index}) => {
-                console.log({filename, chunk, index});
+        const uploadChunk = async (chunkList, hash, filename) => {
+            let waitUpload = chunkList.map(({chunk, index}) => {
+                console.log({chunk, index});
                 let fd = new FormData()
                 fd.append('filename', filename)
+                fd.append('hash', hash)
                 fd.append('chunk', chunk)
                 fd.append('index', index)
                 return fd
-            }).map(formData => {
+            }).map(async (formData) => {  // keng
                 request({
                     methods: 'post',
                     url: 'http://127.0.0.1:3000/api/upload',
@@ -49,28 +63,15 @@
                 })
             })
             await Promise.all(waitUpload)
-            request({
-                methods: 'post',
-                url: 'http://127.0.0.1:3000/api/merge',
-                headers: {
-                    "content-type": "application/json"
-                },
-                params: JSON.stringify({
-                    file: filename,
-                    length: chunkList.length
-                })
-            })
         }
         const sliceChunk = (file, chunkSize) => {
             const chunkList = []
             const size = file.size
-            const filename = file.name
             let cur = 0
             let idx = 0
             while (cur <= size) {
                 let chunk = {
                     chunk: file.slice(cur, cur+chunkSize),
-                    filename: filename,
                     index: idx
                 }
                 chunkList.push(chunk)
@@ -78,6 +79,32 @@
                 idx++
             }
             return chunkList
+        }
+        const createHash = async (chunkList) => {
+            return new Promise((resolve, reject) => {
+                worker = new Worker('./createHash.js')
+                worker.postMessage({chunkList})
+                worker.onmessage = e => {
+                    const { hash } = e.data
+                    if (hash) {
+                        resolve(hash)
+                    }
+                }
+            })
+        }
+        const verifyHash = (filename, fileHash) => {
+            const {data} = request({
+                methods: 'GET',
+                url: 'http://127.0.0.1:3000/api/verify',
+                headers: {
+                    "content-type": "application/json"
+                },
+                params: JSON.stringify({
+                    filename: filename,
+                    fileHash: fileHash
+                })
+            })
+            return JSON.parse(data);
         }
         /**
          * @params options
@@ -97,18 +124,24 @@
                         xhr.setRequestHeader(key, element)
                     }
                 }
-                xhr.onreadystatechange = () => {
-                    if (xhr.readyState === 4) {
-                        if (xhr.status === 200) {
-                            resolve(xhr.responseText)
-                        } else {
-                            reject(new Error('error'))
-                        }
-                    } else {
-                        reject(new Error('error'))
-                    }
-                }
+                // xhr.onreadystatechange = () => {
+                //     if (xhr.readyState === 4) {
+                //         if (xhr.status === 200) {
+                //             resolve(xhr.responseText)
+                //         } else {
+                //             reject(new Error('error'))
+                //         }
+                //     } else {
+                //         reject(new Error('error'))
+                //     }
+                // }
                 xhr.send(params)
+                xhr.onload = e => {
+                    resolve({
+                        data: e.target.response
+                    });
+                };
+                
             })
             
 
