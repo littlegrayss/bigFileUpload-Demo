@@ -5,6 +5,7 @@ const path = require("path")
 const multiparty = require("multiparty");
 const server = http.createServer();
 const UPLOAD_DIR = path.resolve(__dirname, "./", "target");
+const UPLOAD_HOST = 'http://localhost:3000/target'
 const resolvePost = req => {
   return new Promise((resolve, reject) => {
     let chunk = '';
@@ -49,7 +50,7 @@ const mergeFile = async (filePath, filename, size) => {
     )
   )
   console.log('delete');
-  fse.rmdirSync(chunkDir);
+  fse.rmdirSync(chunkDir, { recursive: true });
 }
 server.on("request", async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -82,6 +83,23 @@ server.on("request", async (req, res) => {
       res.end(data);
     })
   }
+  if (url === '/api/easyUpload') {
+    const multipart = new multiparty.Form();
+    multipart.parse(req, async (err, fields, files) => {
+      console.log(err, fields, files);
+      if (err) {
+        console.log(err);
+        return;
+      }
+      const [myfile] = files.myfile
+      const filename = myfile.originalFilename
+      if (!fse.existsSync(UPLOAD_DIR)) {
+        fse.mkdirSync(UPLOAD_DIR)
+      }
+      await fse.moveSync(myfile.path, `${UPLOAD_DIR}/${filename}`)
+      res.end('received')
+    })
+  }
   if (url === '/api/upload') {
     const multipart = new multiparty.Form();
     multipart.parse(req, async (err, fields, files) => {
@@ -97,7 +115,7 @@ server.on("request", async (req, res) => {
       if (!fse.existsSync(UPLOAD_DIR)) {
         fse.mkdirSync(UPLOAD_DIR)
       }
-      fse.moveSync(chunk.path, `${UPLOAD_DIR}/${hash}/${hash}-${index}`)
+      await fse.moveSync(chunk.path, `${UPLOAD_DIR}/${hash}/${hash}-${index}`)
       console.log(`${UPLOAD_DIR}/${hash}/${hash}-${index}`);
       res.end('received')
     })
@@ -107,11 +125,36 @@ server.on("request", async (req, res) => {
     const { hash, filename, size } = data
     const filePath = path.resolve(UPLOAD_DIR, filename)
     await mergeFile(filePath, hash, size)
-    res.end('ok')
+    res.end(JSON.stringify({
+      file_path: `${UPLOAD_HOST}/${filename}`
+    }))
   }
   if (url === '/api/verify') {
     const data = await resolvePost(req)
-    const { filename, fileHash } = data
+    const { filename, fileHash, length } = data
+    const filePath = path.resolve(UPLOAD_DIR, filename)
+    if (fse.existsSync(filePath)) {
+      res.end(
+        JSON.stringify({
+          shouldUpload: false,
+          file_path: `${UPLOAD_HOST}/${filename}`
+        })
+      );
+    } else {
+      let unUploadChunk = []
+      for (let i = 0;i < length;i++) {
+        let chunkPath = path.resolve(UPLOAD_DIR, `${fileHash}-${i}`)
+        if (!fse.existsSync(chunkPath)) {
+          unUploadChunk.push(i)
+        }
+      }
+      res.end(
+        JSON.stringify({
+          shouldUpload: true,
+          unUploadChunk: unUploadChunk
+        })
+      );
+    }
   }
 });
 

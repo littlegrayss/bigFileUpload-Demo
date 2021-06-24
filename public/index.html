@@ -7,10 +7,40 @@
     <title>Document</title>
 </head>
 <body>
-    <input type="file" name="upload" id="upload" accept="*">
-    <button onclick="submit()">submit</button>
+    <div>
+        <h2>普通上传</h2>
+        <form action="/api/easyUpload" method="POST" enctype="multipart/form-data">
+            <input type="file" name="myfile">
+            <input type="submit">
+        </form>
+    </div>
+    <div>
+        <h2>iframe免跳转上传</h2>
+        <iframe id="temp-iframe" name="temp-iframe" src="" style="display:none;"></iframe>
+        <form action="/api/easyUpload" method="POST" enctype="multipart/form-data" target="temp-iframe">
+            <input type="file" name="myfile">
+            <button type="submit" id="btn-0">上 传</button>
+        </form>
+    </div>
+    <div>
+        <h2>大文件上传</h2>
+        <input type="file" name="upload" id="upload" accept="*">
+        <button onclick="submit()">submit</button>
+        <button onclick="pause()">暂停</button>
+    </div>
+    <script>
+        var iframe = document.getElementById('temp-iframe');
+        iframe.addEventListener('load', function () {
+            var result = iframe.contentWindow.document.body.innerText;
+            
+            if (result == 'received') {
+                alert('上传成功');
+            }
+        });
+    </script>
     <script>
         let worker = {}
+        let requestList = []
         const sliceChunkSize = 2 * 1024 * 1024
         async function submit() {
             const [file] = document.querySelector('#upload').files
@@ -27,10 +57,26 @@
                 }]
             }
             const hash = await createHash(chunkList)
+            const {shouldUpload, file_path, unUploadChunk} = await verifyHash(filename, hash, chunkList.length)
+            if (!shouldUpload) {
+                alert(`上传成功，文件地址是：${file_path}`);
+                return 
+            } else {
+                // let tempList = []
+                // unUploadChunk.forEach(idx => {
+                //     let uploadedIndex = chunkList.findIndex(chunk => chunk.index == idx)
+                //     if (uploadedIndex == -1) tempList.push(idx)
 
+                // })
+                // chunkList = tempList
+            }
             console.log(hash);
-            await uploadChunk(chunkList, hash, filename)
-            request({
+            try {
+                await uploadChunk(chunkList, hash, filename)
+            } catch(err) {
+                return 
+            }
+            const res = await request({
                 methods: 'post',
                 url: 'http://127.0.0.1:3000/api/merge',
                 headers: {
@@ -42,6 +88,12 @@
                     size: sliceChunkSize
                 })
             })
+            
+            if (res.data) {
+                const data = JSON.parse(res.data)
+                const {file_path} = data
+                alert(`上传成功，文件地址是：${file_path}`);
+            }
         }
         const uploadChunk = async (chunkList, hash, filename) => {
             let waitUpload = chunkList.map(({chunk, index}) => {
@@ -52,16 +104,18 @@
                 fd.append('chunk', chunk)
                 fd.append('index', index)
                 return fd
-            }).map(async (formData) => {  // keng
-                request({
+            }).map(async (formData) => {
+                await request({
                     methods: 'post',
                     url: 'http://127.0.0.1:3000/api/upload',
                     // headers: {
                     //     'Content-Type': 'multipart/form-data'
                     // },
-                    params: formData
+                    params: formData,
+                    requestList: requestList
                 })
             })
+            console.log(waitUpload);
             await Promise.all(waitUpload)
         }
         const sliceChunk = (file, chunkSize) => {
@@ -69,7 +123,7 @@
             const size = file.size
             let cur = 0
             let idx = 0
-            while (cur <= size) {
+            while (cur < size) {
                 let chunk = {
                     chunk: file.slice(cur, cur+chunkSize),
                     index: idx
@@ -92,19 +146,27 @@
                 }
             })
         }
-        const verifyHash = (filename, fileHash) => {
-            const {data} = request({
-                methods: 'GET',
+        const verifyHash = async (filename, fileHash, length) => {
+            const {data} = await request({
+                methods: 'post',
                 url: 'http://127.0.0.1:3000/api/verify',
                 headers: {
                     "content-type": "application/json"
                 },
                 params: JSON.stringify({
                     filename: filename,
-                    fileHash: fileHash
+                    fileHash: fileHash,
+                    length: length
                 })
             })
             return JSON.parse(data);
+        }
+        const pause = () => {
+            requestList.forEach(xhr => xhr?.abort());
+            requestList = [];
+            if (worker) {
+                worker.onmessage = null;
+            }
         }
         /**
          * @params options
@@ -114,7 +176,7 @@
          *          k:v
          * */
         const request = (options) => {
-            const {methods, url, headers, params} = options
+            const {methods, url, headers, params, requestList} = options
             return new Promise((resolve,reject) => {
                 const xhr = new XMLHttpRequest()
                 xhr.open(methods, url, true)
@@ -137,11 +199,15 @@
                 // }
                 xhr.send(params)
                 xhr.onload = e => {
+                    if (requestList) {
+                        const xhrIndex = requestList.findIndex(item => item === xhr);
+                        requestList.splice(xhrIndex, 1);
+                    }
                     resolve({
                         data: e.target.response
                     });
                 };
-                
+                requestList && requestList.push(xhr)
             })
             
 
